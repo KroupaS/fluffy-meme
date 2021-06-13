@@ -24,9 +24,9 @@ typedef struct posix_header_s	      // Copy-pasted from gnu.org
 	                              /* 500 */
 } posix_header_t;
 
-void error_invalid_invocation(char *);									// Error function, prints the reason why invalid invocation occured.  
+void error_invalid_invocation(char *);									// Error function, prints out why an invalid invocation occured.  
 void error_archive_notfound(char *, char *);								// Error function, prints out a GNUTAR style "archive X not found" error message.
-void error_unexpected_EOF(char *);									// Error function, called after unexpected EOF character is found, exits the program with 2 and with a GNUTAR style message.
+void error_unexpected_EOF(char *);									// Error function, exits the program with 2 and a GNUTAR style "unexpected EOF" message.
 
 unsigned char arg_parse(int, char **, unsigned int *, unsigned int *, unsigned int *);			// Argument parsing function, returns a flag which indicates that either extraction or listing should be performed.
 int name_listing(char **, unsigned int *, unsigned int, unsigned int);					// Function that performs listing, eventually called after arg_parse.
@@ -187,7 +187,9 @@ unsigned char arg_parse(int arg_argc, char **arg_argv, unsigned int *arg_filenam
 	
 													// Arguments are now parsed and its time to check whether they make sense semantically.
 
-	if(!(((arg_flag & 1) || (arg_flag & 8)) && !((arg_flag & 1) && (arg_flag & 8))))		// Checks whether exactly one of -tx options have been passed. 
+
+	//if(!(((arg_flag & 1) || (arg_flag & 8)) && !((arg_flag & 1) && (arg_flag & 8))))		// Checks whether exactly one of -tx options have been passed. 
+	if(((arg_flag & 1) ^ ((arg_flag & 8)/8)) != 1)
 	{												// Assuming !((a || b) && !(a && b)) is the best way to do NOR
 		error_invalid_invocation("You must specify exactly one of the -tx operation modes");
 	}
@@ -238,16 +240,15 @@ int name_listing(char **list_argv, unsigned int *list_filename_indices, unsigned
 	}
 
 	fseek(archive_fp, 0L, SEEK_END);
-	unsigned long long archive_size = ftell(archive_fp);						// ULL for archive size to prevent overflow. 
+	const long archive_size = ftell(archive_fp);							// Store the archive size by fseeking to the end, then rewind. 
 	fseek(archive_fp, 0L, SEEK_SET);								 
 	
-
-	posix_header_t current_header;									
+	posix_header_t current_header;									// posix_header_t struct for storing information from the current header during parsing of the archive.	
 	posix_header_t *current_header_ptr = &current_header;
 	
-	long current_header_size;
-	int header_read_count;
-	int zero_block_read_count;
+	long current_header_size;									// Integer to store the size of a file entry listed in the header
+	int header_read_count;										// 	
+	int zero_block_read_count;									// Two integers for storing how many bytes have been fread()-ed when parsing a header/when looking for null byte blocks. 
 
 	unsigned int list_filename_indices_copy[list_filename_counter];					// Copy the list of indices of filenames so that later on we can determine which filenames have (/not) been found.
 	memcpy(&list_filename_indices_copy, list_filename_indices, list_filename_counter*sizeof(unsigned int));
@@ -258,9 +259,9 @@ int name_listing(char **list_argv, unsigned int *list_filename_indices, unsigned
 
 	const char null_block[1024] = {0};								// Two 1024 byte blocks for comparisons later on. 
 	char test_block[1024];										//
-	unsigned char typeflag_check = '0';
+	unsigned char typeflag_check;									// Char for storing the current header's typeflag so that we can print it in an error if needed.
 	
-	while((unsigned long long)ftell(archive_fp) < archive_size)
+	while(ftell(archive_fp) < archive_size)
 	{
 		if((header_read_count = fread(current_header_ptr, 1, 512, archive_fp)) < 512)		// Attempt to read the next 512 bytes as a standard tar header, send an error to stdout if less than 512 bytes are read.
 		{
@@ -293,7 +294,7 @@ int name_listing(char **list_argv, unsigned int *list_filename_indices, unsigned
 													// As we have just passed through a valid header + file-entry pair, call our name printing function.
 		print_filename(list_argv, current_header_ptr->name, list_filename_indices, list_filename_counter, list_filename_indices_copy, &list_filenames_found_counter); 
 		
-		if((fgetc(archive_fp) == EOF) && ((unsigned long long)ftell(archive_fp) == archive_size))
+		if((fgetc(archive_fp) == EOF) && (ftell(archive_fp) == archive_size))
 		{
 			goto list_check_and_exit;							// If there is an EOF char right after the last file block silently exit with 0.
 		}
@@ -331,7 +332,7 @@ list_check_and_exit:											// We are at the end, just check if all passed fi
 				printf("%s: %s: Not found in archive\n", list_argv[0], list_argv[list_filename_indices_copy[i]]);
 		       }	       
 		printf("%s: Exiting with failure status due to previous errors\n", list_argv[0]);
-		exit(2);
+		return 2;
 	}
 	else
 	{
@@ -351,21 +352,23 @@ int extracting(char **ext_argv, unsigned int *ext_filename_indices, unsigned int
 	}
 
 	fseek(archive_fp, 0L, SEEK_END);				
-	unsigned long long archive_size = ftell(archive_fp);						 
+	const long archive_size = ftell(archive_fp);							// Store the archive size by fseeking to the end, then rewind. 
 	fseek(archive_fp, 0L, SEEK_SET);		
 
-	posix_header_t current_header;									
+	posix_header_t current_header;									// posix_header_t struct for storing information from the current header during parsing of the archive.	
 	posix_header_t *current_header_ptr = &current_header;
-	char file_content[512];										// Char array for storing a single file entry block 
+	char file_content[512];										// Char array for storing a single file entry block, 
+													// will be used to extract file entries into new files.
+	
+	unsigned int current_pos = 0;									// Two integers used to check whether there the specified amount of bytes is present in a given file entry. 
+	unsigned int file_block_end = 0;								// 
+	
+	long current_header_size;									// Two integers used to calculate how many byte blocks we are expecting in an entry
+	unsigned int file_block_overhang = 0;								// 
 
-	unsigned int current_pos = 0;									 
-	unsigned int file_block_end = 0;
-	unsigned int file_block_overhang = 0;
-
-	long current_header_size;
-	int header_read_count;
-	int file_read_count;
-	int zero_block_read_count;
+	int header_read_count;										// Three integers used to verify whether we have read the correct amount of bytes from the archive file.
+	int file_read_count;										//		
+	int zero_block_read_count;									//
 
 	unsigned int ext_filename_indices_copy[ext_filename_counter];					// We copy the list of indices of filenames. This is needed for determining which filenames have (/not) been found.
 	memcpy(&ext_filename_indices_copy, ext_filename_indices, ext_filename_counter*sizeof(unsigned int));
@@ -373,9 +376,9 @@ int extracting(char **ext_argv, unsigned int *ext_filename_indices, unsigned int
 	
 	const char null_block[1024] = {0};
 	char test_block[1024];
-	unsigned char typeflag_check = '0';
+	unsigned char typeflag_check;									// Char for storing the current header's typeflag so that we can print it in an error if needed.
 
-	while((unsigned long long)ftell(archive_fp) < archive_size)
+	while(ftell(archive_fp) < archive_size)
 	{
 		if((header_read_count = fread(current_header_ptr, 1, 512, archive_fp)) < 512)		// Attempt to read the next 512 bytes as a standard tar header, exit with EOF error if less than 512 bytes are read.
 		{
@@ -458,7 +461,7 @@ extract:
 			
 		}
 
-		if((fgetc(archive_fp) == EOF) && ((unsigned long long)ftell(archive_fp) == archive_size))
+		if((fgetc(archive_fp) == EOF) && (ftell(archive_fp) == archive_size))
 		{
 			goto ext_check_and_exit;							// If there is an EOF char right after the last file block silently exit with 0.
 		}
@@ -491,7 +494,7 @@ ext_check_and_exit:
 		       }
 		}	       
 		printf("%s: Exiting with failure status due to previous errors\n", ext_argv[0]);
-		exit(2);
+		return 2;
 	}
 	else												// If both integers from the previous condition are 0 or both are the same non-zero value, we 
 	{												// return 0 to main, as either no filenames were passed as arguments or all of them were found.
