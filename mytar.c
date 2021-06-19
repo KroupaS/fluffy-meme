@@ -21,7 +21,8 @@ typedef struct posix_header_s	      // Copy-pasted from gnu.org
 	char devmajor[8];             /* 329 */
 	char devminor[8];             /* 337 */
 	char prefix[155];             /* 345 */
-	                              /* 500 */
+	char padding[12];	      /* 500 */
+	                              /* 512 */
 } posix_header_t;
 
 void error_invalid_invocation(char *);									// Error function, prints out why an invalid invocation occured.  
@@ -86,6 +87,7 @@ int main(int argc, char **argv)
 	else												// For safety reasons, as if arg_parse somehow returned a flag with neither '-x' or '-t' set, 
 	{												// the ouput could be mistaken for non-verbose correct execution (if main just terminated here). 
 		printf("Error: arg_parse returned a flag with no opmode selected\n");
+		exit(2);
 	}
 
 	return 0;
@@ -187,10 +189,8 @@ unsigned char arg_parse(int arg_argc, char **arg_argv, unsigned int *arg_filenam
 	
 													// Arguments are now parsed and its time to check whether they make sense semantically.
 
-
-	//if(!(((arg_flag & 1) || (arg_flag & 8)) && !((arg_flag & 1) && (arg_flag & 8))))		// Checks whether exactly one of -tx options have been passed. 
-	if(((arg_flag & 1) ^ ((arg_flag & 8)/8)) != 1)
-	{												// Assuming !((a || b) && !(a && b)) is the best way to do NOR
+	if(((arg_flag & 1) ^ ((arg_flag & 8)/8)) != 1)							// Checks whether exactly one of -tx options have been passed.
+	{												
 		error_invalid_invocation("You must specify exactly one of the -tx operation modes");
 	}
 	if(!(arg_flag & 4))										// Checks whether '-f' was passed.
@@ -301,23 +301,23 @@ int name_listing(char **list_argv, unsigned int *list_filename_indices, unsigned
 		fseek(archive_fp, -1L, SEEK_CUR);
 		
 
-		if((zero_block_read_count = fread(test_block, 1, 1024L, archive_fp)) < 1024)		// Check if the next 1024 bytes are null, exit succesfully if so. Move the file pointer back if not.	
+		if((zero_block_read_count = fread(test_block, 1, 1024L, archive_fp)) < 1024)		// Need to check if the next 1024 bytes are null, first load them into a buffer.	
 		{											 			
-			if(!memcmp(test_block, null_block, 512)) 					// If less than 1024 bytes are left, first check if this is a lone zero block.	
+			if(!memcmp(test_block, null_block, 512)) 					// If less than 1024 bytes are left, check if this is a lone zero block.	
 			{
-				printf("%s: A lone zero block at %ld\n", list_argv[0], ftell(archive_fp)/512);	// If it is, print a warning and exit the loop.
-				goto list_check_and_exit;	
+				printf("%s: A lone zero block at %ld\n", list_argv[0], ftell(archive_fp)/512);	
+				goto list_check_and_exit;						// If it is, print a warning and exit the loop.
 			}
-			fseek(archive_fp, -zero_block_read_count, SEEK_CUR);				// If this is not a lone zero block, treat it as a header and try to list its name 			
-			if((header_read_count = fread(current_header_ptr, 1, 512, archive_fp)) > 99)	// and then exit with unexpected EOF error.
+			fseek(archive_fp, -zero_block_read_count, SEEK_CUR);				 			
+			if((header_read_count = fread(current_header_ptr, 1, 512, archive_fp)) > 99)	// If this is not a lone zero block, treat it as a header and try to list its name
 			{
 				printf("%s\n", current_header_ptr->name);
 			}
 			error_unexpected_EOF(list_argv[0]);
 		}		
-		if(!memcmp(test_block, null_block, 1024))
+		if(!memcmp(test_block, null_block, 1024))						// If 1024 bytes have been read succesfully, check whether they are all 0.
 		{
-			goto list_check_and_exit;							// The next two blocks are all zeroes, exit succesfully.
+			goto list_check_and_exit;							// If so, exit succesfully.
 		}
 		fseek(archive_fp, -1024L, SEEK_CUR);							// The last two blocks are not zero-blocks, move the file pointer back  
 	}												// and carry on iterating through the archive.			
@@ -432,6 +432,7 @@ extract:
 			new_file = fopen(current_header_ptr->name, "w");	
 			if(current_header_size == 0)							// If the file entry is empty, skip over to the next iteration.
 			{
+				fclose(new_file);
 				continue;
 			}
 			for(unsigned int i = 0; i<(current_header_size/512)-1; ++i)			// Unless the archive file suddenly ends with EOF, keep extracting blocks from the current file entry
@@ -457,7 +458,7 @@ extract:
 				}
 				fwrite(file_content, 1, file_block_overhang, new_file);			 
 			}
-			fclose(new_file);								// Now we can close new_file to prevent future problems.
+			fclose(new_file);								// Now we can close new_file.
 			
 		}
 
@@ -467,20 +468,21 @@ extract:
 		}
 		fseek(archive_fp, -1L, SEEK_CUR);
 
-		if((zero_block_read_count = fread(test_block, 1, 1024L, archive_fp)) < 1024)		// Check if the next 1024 bytes are null, exit succesfully if so. Move the file pointer back if not.	
+		if((zero_block_read_count = fread(test_block, 1, 1024L, archive_fp)) < 1024)		// Need to check if the next 1024 bytes are null, first load them into a buffer.	
 		{											 			
 			if(!memcmp(test_block, null_block, 512)) 					// If less than 1024 bytes are left, first check if this is a lone zero block.	
 			{
-				printf("%s: A lone zero block at %ld\n", ext_argv[0], ftell(archive_fp)/512);	// If it is, print a warning and exit the loop.
-				goto ext_check_and_exit;	
+				printf("%s: A lone zero block at %ld\n", ext_argv[0], ftell(archive_fp)/512);	
+				goto ext_check_and_exit;						// If it is, print a warning and exit the loop.
 			}
 			fseek(archive_fp, -zero_block_read_count, SEEK_CUR);				// If this is not a lone zero block, "rewind" the pointer back and continue in the next iteration 		
+			continue;
 		}		
-		if(!memcmp(test_block, null_block, 1024))
+		if(!memcmp(test_block, null_block, 1024))						// If 1024 bytes have been read succesfully, check whether they are all 0. 
 		{
-			goto ext_check_and_exit;							// The next two blocks are all zeroes, exit succesfully.
+			goto ext_check_and_exit;							// If so, exit succesfully.
 		}
-		fseek(archive_fp, -1024L, SEEK_CUR);							// The last two blocks are not zero-blocks, move the file pointer back  
+		fseek(archive_fp, -1024L, SEEK_CUR);							// The last two blocks are not zero-blocks, move the file pointer back and continue. 
 	}
 ext_check_and_exit:									
 	fclose(archive_fp);										
